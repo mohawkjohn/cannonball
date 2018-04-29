@@ -1,11 +1,11 @@
 from .context import *
 
-from cannonball import Orbiter
+from cannonball import Orbiter, TimeTrigger
 from cannonball.log import Log
 
 from scipy.linalg import norm
 
-PLOT = True
+PLOT = False
 
 class TestOrbiter(unittest.TestCase):
 
@@ -14,10 +14,22 @@ class TestOrbiter(unittest.TestCase):
                             7000000.0, 0.0,    0.0,
                             0.0,       6500.0, 0.0])
 
+        
     def test_conic_elements(self):
         trv = self.trv
-        orb = Orbiter(trv)
-        elements = orb.conic_elements()
+        orb = Orbiter(trv = trv)
+        elements = orb.state.conic_elements()
+
+    def test_time_trigger(self):
+        trv      = self.trv
+        trigger  = TimeTrigger(500 * 60.0)
+        dt_guess = 0.5
+
+        orb = Orbiter(trv = trv)
+        orb.integrate_until(dt_guess, trigger)
+
+        self.assertLessEqual(orb.state.trv[0], trigger.time)
+        self.assertLessEqual(trigger.time - orb.state.trv[0], dt_guess)
         
     def test_integrate_log_and_elements(self):
         """Integrates, stores, and reads a trajectory"""
@@ -28,7 +40,7 @@ class TestOrbiter(unittest.TestCase):
         max_time = 500 * 60.0
         dt_guess = 0.5
 
-        orb  = Orbiter(trv)
+        orb  = Orbiter(trv = trv)
         orb.integrate(dt_guess, max_time)
         for log in orb.logs:
             orb.logs[log].close()
@@ -41,9 +53,6 @@ class TestOrbiter(unittest.TestCase):
 
         elts_log = Log('elements.log')
         elts = elts_log.read()
-
-        import pdb
-        pdb.set_trace()
         
         if PLOT:
             import matplotlib.pyplot as plt
