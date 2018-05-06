@@ -2,6 +2,8 @@ import math
 
 import numpy as np
 
+from scipy.linalg import norm
+
 def basic_gravity(trv,
                   step_using_index = False,
                   j2               = None,
@@ -9,7 +11,7 @@ def basic_gravity(trv,
                   mu               = 3.986004415e14,
                   gradient         = False):
     r     = trv[1:4]
-    r_mag = math.sqrt(r[0]**2 + r[1]**2 + r[2]**2)
+    r_mag = norm(r)
     a     = r * -mu / r_mag**3
 
     if j2 is not None:

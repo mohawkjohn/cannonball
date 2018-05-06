@@ -22,7 +22,7 @@ def step(x_p, dh, flow, gradient = False, **flow_args):
     return (x_n, da_dr)
         
 
-def adaptive_step(x_p, dt, flow, accuracy=1e-6, gradient = False, **flow_args):  # from Numerical Recipes
+def adaptive_step(x_p, dt, flow, max_dt = None, accuracy=1e-6, gradient = False, **flow_args):  # from Numerical Recipes
     SAFETY = 0.9; PGROW = -0.2; PSHRINK = -0.25;
     ERRCON = 1.89E-4; TINY = 1.0E-30
     scale = flow(x_p)
@@ -45,7 +45,7 @@ def adaptive_step(x_p, dt, flow, accuracy=1e-6, gradient = False, **flow_args): 
 
         dx = x_half - x_full
         error = np.absolute(dx / scale).max() / accuracy
- 
+        
         if error <= 1:
             break;
         dt_temp = SAFETY * dt * error**PSHRINK
@@ -55,6 +55,7 @@ def adaptive_step(x_p, dt, flow, accuracy=1e-6, gradient = False, **flow_args): 
             dt = min(dt_temp, 0.1 * dt)
         if abs(dt) == 0.0:
             raise OverflowError("step size underflow")
+        
     if error > ERRCON:
         dt *= SAFETY * error**PGROW
     else:
