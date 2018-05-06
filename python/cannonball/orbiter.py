@@ -21,15 +21,54 @@ def make_elements(r_periapsis  = None,
 class Orbiter(object):
     """Just an object that is affected by at least one body."""
 
+    class StateTransition(object):
+        """State transition model for some period of time."""
+        def __init__(self, time, degree = 1):
+            self.Phi = np.identity(6)
+            self.left_time   = time # start time
+            self.right_time  = time # end time
+            self.degree      = degree
+
+        def extend(self, da_dr, dt):
+            """ Increase the time span covered by this state transition model."""
+            if dt == 0.0:
+                return self.Phi
+            Phi_new      = np.identity(6)
+
+            if self.degree == 1:
+                Phi_new[0,3] = dt
+                Phi_new[1,4] = dt
+                Phi_new[2,5] = dt
+                Phi_new[3:6,0:3] = da_dr * dt
+            elif self.degree == 2:
+                Fdt = np.zeros((6,6))
+                Fdt[0,3] = dt
+                Fdt[1,4] = dt
+                Fdt[2,5] = dt
+                Fdt[3:6,0:3] = da_dr * dt
+                Phi_new += Fdt + Fdt.dot(Fdt)*0.5
+                
+            self.Phi = Phi_new.dot(self.Phi)
+            self.left_time += dt
+            return self.Phi
+
+        def dot(self, trv):
+            if trv[0] != self.right_time:
+                raise(ValueError, "expected state time to match right-hand time for STM")
+            return np.hstack((self.left_time, self.Phi.dot(trv[1:7])))
+            
+
     class State(object):
         def __init__(self,
                      trv        = None,
                      elements   = None,
                      epoch_time = 0.0,
                      conic_mu   = 3.986004415e14,
-                     r_eq       = 6378137.0):
+                     r_eq       = 6378137.0,
+                     j2         = 1.081874e-3):
             self.conic_mu    = conic_mu
             self.r_eq        = r_eq
+            self.j2          = j2
 
             if elements is not None:
                 # Note that SPICE uses km, km/s, and we use m, m/s
@@ -129,12 +168,20 @@ class Orbiter(object):
             return 2.0 * np.pi * np.sqrt(a**3 / self.conic_mu)
         
         def adaptive_step(self, dt, **step_kwargs):
-            dt, trv, temp = rk4.adaptive_step(self.trv, dt, flow = gravity.basic_gravity, mu = self.conic_mu, r_eq = self.r_eq, **step_kwargs)
-            return Orbiter.State(trv = trv, conic_mu = self.conic_mu), dt
+            dt, trv, da_dr = rk4.adaptive_step(self.trv, dt, flow = gravity.basic_gravity, mu = self.conic_mu, r_eq = self.r_eq, j2 = self.j2, gradient = False, **step_kwargs)
+            return Orbiter.State(trv = trv, conic_mu = self.conic_mu, r_eq = self.r_eq, j2 = self.j2), dt
+
+        def adaptive_step_with_gradient(self, dt, **step_kwargs):
+            dt, trv, da_dr = rk4.adaptive_step(self.trv, dt, flow = gravity.basic_gravity, mu = self.conic_mu, r_eq = self.r_eq, j2 = self.j2, gradient = True, **step_kwargs)
+            return Orbiter.State(trv = trv, conic_mu = self.conic_mu, r_eq = self.r_eq, j2 = self.j2), dt, da_dr
 
         def fixed_step(self, dt, **step_kwargs):
-            trv, temp = rk4.step(self.trv, dt, flow = gravity.basic_gravity, mu = self.conic_mu, r_eq = self.r_eq, **step_kwargs)
-            return Orbiter.State(trv = trv, conic_mu = self.conic_mu)
+            trv, da_dr = rk4.step(self.trv, dt, flow = gravity.basic_gravity, mu = self.conic_mu, r_eq = self.r_eq, j2 = self.j2, gradient = False, **step_kwargs)
+            return Orbiter.State(trv = trv, conic_mu = self.conic_mu, r_eq = self.r_eq, j2 = self.j2)
+
+        def fixed_step_with_gradient(self, dt, **step_kwargs):
+            trv, da_dr = rk4.step(self.trv, dt, flow = gravity.basic_gravity, mu = self.conic_mu, r_eq = self.r_eq, j2 = self.j2, gradient = True, **step_kwargs)
+            return Orbiter.State(trv = trv, conic_mu = self.conic_mu, r_eq = self.r_eq, j2 = self.j2), da_dr
         
         def estimate_time_to_apsis(self, steps = 20, tolerance = 1e-5, max_dt = 200.0):
             """Extremely rough estimate, strictly for propagation purposes.
@@ -212,12 +259,12 @@ class Orbiter(object):
             self.logs['elements'] = Log(use_logs['elements'], mode = 'w')
             self.log_elements()
 
-    def integrate(self, dt_requested, t_max, accuracy = 1e-6, gradient = False, **step_kwargs):
+    def integrate(self, dt_requested, t_max, accuracy = 1e-6, stm = None, **step_kwargs):
         trigger = TimeTrigger(t_max)
-        return self.integrate_until(dt_requested, trigger, accuracy = accuracy, gradient = gradient, **step_kwargs)
+        return self.integrate_until(dt_requested, trigger, accuracy = accuracy, stm = stm, **step_kwargs)
 
 
-    def integrate_until(self, dt_requested, trigger, accuracy = 1e-6, gradient = False, **step_kwargs):
+    def integrate_until(self, dt_requested, trigger, accuracy = 1e-6, stm = None, **step_kwargs):
         dt       = dt_requested
         dt_guess = dt_requested
         #dt_min = dt
@@ -227,50 +274,86 @@ class Orbiter(object):
         # at singularities --- e.g., when we start at apoapsis and want to
         # integrate until a periapsis trigger, we find that the < condition
         # fails at the initial step.
-        self.state, dt = self.state.adaptive_step(dt, accuracy = accuracy, **step_kwargs)
+        
+        if stm is True:
+            stm = Orbiter.StateTransition(self.state.trv[0])
+
+        if stm:
+            prev_dt = dt
+            self.state, dt, da_dr = self.state.adaptive_step_with_gradient(dt, accuracy = accuracy, **step_kwargs)
+            stm.extend(da_dr, prev_dt)
+        
+        else:
+            self.state, dt = self.state.adaptive_step(dt, accuracy = accuracy, **step_kwargs)
+
+            
         if 'inertial' in self.logs: self.log_inertial()
         if 'elements' in self.logs: self.log_elements()        
 
         while self.state < trigger:
 
-            state, dt = self.state.adaptive_step(dt, accuracy = accuracy, **step_kwargs)
+            if stm is None:
+                state, dt = self.state.adaptive_step(dt, accuracy = accuracy, **step_kwargs)
+            else:
+                state, dt, da_dr = self.state.adaptive_step_with_gradient(dt, accuracy = accuracy, **step_kwargs)
 
             if trigger < state: # overshot
                 break
             else:
+                if stm: stm.extend(da_dr, state.trv[0] - self.state.trv[0])
                 self.state = state
+                
 
             if 'inertial' in self.logs: self.log_inertial()
             if 'elements' in self.logs: self.log_elements()
                 
-        self.fixed_integrate_until(dt_requested, trigger, gradient = gradient, at_least_once = False, **step_kwargs)
+        stm = self.fixed_integrate_until(dt_requested, trigger, stm = stm, at_least_once = False, **step_kwargs)
 
         # At this point, we should be within dt_requested of trigger, and not past it.
         if trigger.is_exact() and self.state < trigger:
-            self.fixed_integrate_until(trigger.guess_remaining(self.state), trigger, gradient = gradient, at_least_once = False, **step_kwargs)
+            stm = self.fixed_integrate_until(trigger.guess_remaining(self.state), trigger, stm = stm, at_least_once = False, **step_kwargs)
 
-        return
+        return stm
 
-    def fixed_integrate_until(self, dt, trigger, gradient = False, at_least_once = True, **step_kwargs):
-        """Propagate by fixed step dt."""
+    def fixed_integrate_until(self, dt, trigger, stm = None, at_least_once = True, **step_kwargs):
+        """Propagate by fixed step dt until a trigger condition is
+        reached.  Note that if you're at a singularity propagating to
+        another singularity (apsis to apsis), you'll want at_least_once
+        to be True, or you'll never propagate the first time. If you're
+        calling this function from another integration function and
+        are just trying to finish off the last few seconds, you should
+        make sure at_least_once is False.
+        """
 
+        if stm is True:
+            stm = Orbiter.StateTransition(self.state.trv[0])
+        
         if at_least_once:
-            self.state = self.state.fixed_step(dt, **step_kwargs)
+            if stm:
+                self.state, da_dr = self.state.fixed_step_with_gradient(dt, **step_kwargs)
+                stm.extend(da_dr, dt)
+            else:
+                self.state = self.state.fixed_step(dt, **step_kwargs)
+                
             if 'inertial' in self.logs: self.log_inertial()
             if 'elements' in self.logs: self.log_elements()
                 
         while self.state < trigger:
-            state = self.state.fixed_step(dt, **step_kwargs)
+            if stm:
+                state, da_dr = self.state.fixed_step_with_gradient(dt, **step_kwargs)
+            else:
+                state = self.state.fixed_step(dt, **step_kwargs)
             
             if trigger < state: # don't record the state if we overshot
                 break
             else:
                 self.state = state
+                if stm: stm.extend(da_dr, dt)
             
             if 'inertial' in self.logs: self.log_inertial()
             if 'elements' in self.logs: self.log_elements()
 
-        return
+        return stm
 
     def log_inertial(self):
         return self.logs['inertial'].write(self.state.trv)

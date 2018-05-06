@@ -7,7 +7,8 @@ import numpy as np
 def step(x_p, dh, flow, gradient = False, **flow_args):
     '''replaces x(h) by x(h + dh)'''
     if gradient:
-        k1, da_dr = flow(x_p, gradient = True, **flow_args) * dh
+        k1, da_dr = flow(x_p, gradient = True, **flow_args)
+        k1 *= dh
     else:
         k1 = flow(x_p, **flow_args) * dh
         da_dr = None

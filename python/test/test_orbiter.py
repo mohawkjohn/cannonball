@@ -88,22 +88,73 @@ class TestOrbiter(unittest.TestCase):
 
     def test_apsis_trigger(self):
         """Integrates until apsis is reached."""
-
-        trv      = self.trv
+        
         dt_guess = 0.5
         trigger  = ApsisTrigger('periapsis')
-
-        orb = Orbiter(trv = trv)
-        orb.integrate_until(dt_guess, trigger)
         
-        #self.assertAlmostEqual(orb.state.radial_velocity(), 0.0)
-        self.assertNotEqual(orb.state.trv[0], 0.0)
-        self.assertAlmostEqual(norm(orb.state.trv[1:4]) / orb.state.r_periapsis(), 1.0, places=6)
+        # Try it once without the STM and then once with it.
+        for stm in (None, True):
+            trv      = np.array(self.trv)
+            orb      = Orbiter(trv = trv)
+            
+            final_stm = orb.integrate_until(dt_guess, trigger, stm = stm)
+        
+            #self.assertAlmostEqual(orb.state.radial_velocity(), 0.0)
+            self.assertNotEqual(orb.state.trv[0], 0.0)
+            self.assertAlmostEqual(norm(orb.state.trv[1:4]) / orb.state.r_periapsis(), 1.0, places=6)
+            
+            # Make sure it didn't go past apsis.
+            t_remaining = trigger.guess_remaining(orb.state)
+            self.assertGreater(dt_guess, t_remaining)
+            self.assertLessEqual(0.0, t_remaining)
 
-        # Make sure it didn't go past apsis.
-        t_remaining = trigger.guess_remaining(orb.state)
-        self.assertGreater(dt_guess, t_remaining)
-        self.assertLessEqual(0.0, t_remaining)
+        self.assertEqual(final_stm.right_time, self.trv[0])
+        self.assertEqual(final_stm.left_time, orb.state.trv[0])
+        self.assertNotEqual(final_stm.left_time, final_stm.right_time)
+
+        # Now propagate a slightly modified state forward in time and
+        # see if the STM can reproduce the difference.
+        trv      = np.array(self.trv)
+        trv[5]  += 10.0
+        dx0      = np.hstack((0.0, trv[1:7] - self.trv[1:7]))
+        orb2     = Orbiter(trv = trv)
+        trigger2 = TimeTrigger(orb.state.trv[0])
+        orb2.integrate_until(dt_guess, trigger2)
+        dx1      = np.hstack((0.0, orb2.state.trv[1:7] - orb.state.trv[1:7]))
+        
+        # Make sure the STM predicts dx1 from dx0
+        np.testing.assert_equal(final_stm.dot(dx0), dx1)
+        #import pdb
+        #pdb.set_trace()
+
+
+    def test_state_transition_model(self):
+        """State transition model is correct over single steps"""
+        dt = 0.5
+        trv = self.trv
+        orb = Orbiter(trv = trv)
+        state0 = orb.state.fixed_step(dt)
+        orb0 = Orbiter(trv = state0.trv)
+        trv  = np.array(state0.trv)
+        state1, da_dr = orb0.state.fixed_step_with_gradient(dt)
+
+        # Compare the results for STM of degree 1 and degree 2
+        stm1 = Orbiter.StateTransition(trv[0], degree = 1)
+        stm2 = Orbiter.StateTransition(trv[0], degree = 2)
+        Phi1 = stm1.extend(da_dr, dt)
+        Phi2 = stm2.extend(da_dr, dt)
+        trv1 = stm1.dot(trv)
+        trv2 = stm2.dot(trv)
+
+        # Test both STMs for their ability to transition a state,
+        # and also compare the resulting states from the degree 1
+        # and degree 2 STMs.
+        np.testing.assert_allclose(state1.trv, trv1, rtol=1e-6, atol=20.0)
+        np.testing.assert_allclose(state1.trv, trv2, rtol=1e-6, atol=20.0)
+        np.testing.assert_raises(AssertionError, np.testing.assert_array_equal, trv1, trv2)
+        print state1.trv
+        print trv1
+        
         
     def test_integrate_log_and_elements(self):
         """Integrates, stores, and reads a trajectory"""
@@ -111,7 +162,7 @@ class TestOrbiter(unittest.TestCase):
         # verification.
         
         trv  = self.trv
-        max_time = 500 * 60.0
+        max_time = 500 * 10.0
         dt_guess = 0.5
 
         orb  = Orbiter(trv = trv)

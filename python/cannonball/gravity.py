@@ -12,7 +12,9 @@ def basic_gravity(trv,
                   gradient         = False):
     r     = trv[1:4]
     r_mag = norm(r)
-    a     = r * -mu / r_mag**3
+    r3    = r_mag**3
+    r5    = None
+    a     = r * -mu / r3
 
     if j2 is not None:
         r5 = r_mag**5
@@ -24,6 +26,7 @@ def basic_gravity(trv,
         a[2] += k * (5*z2/r2 - 3.0) * trv[3]
 
     if gradient: # compute change in acceleration with respect to change in position
+        if r5 is None: r5 = r_mag**5
         r = r.reshape((3,1))
         da_dr = r.dot(r.T) * 3.0 * mu / r5 - np.identity(3) * mu / r3
         
